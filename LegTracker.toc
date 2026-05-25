@@ -4,7 +4,7 @@
 ## Notes: Suivi des objets legendaires par extension, statut, quetes et composants. Suivi de compte complet.
 ## Notes-frFR: Suivi des objets legendaires par extension, statut, quetes et composants. Suivi de compte complet.
 ## Author: Tibiscui - Kirin Tor
-## Version: 2.0.0
+## Version: 3.0
 ## SavedVariables: LegTrackerDB
 ## IconTexture: Interface\AddOns\LegTracker\medias\LegTracker
 ## Category: Tracking

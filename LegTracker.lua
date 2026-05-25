@@ -904,7 +904,7 @@ local function BuildUI()
   local titleStr = titleBg:CreateFontString(nil, "OVERLAY")
   titleStr:SetFont("Fonts\\FRIZQT__.TTF", 12, "OUTLINE")
   titleStr:SetPoint("CENTER", titleBg, "CENTER", 0, 5)
-  titleStr:SetText(COL_GOLD .. "Tibi Leg Tracker - " .. COL_RESET .. COL_PURPLE .. "Midnight" .. COL_RESET)
+  titleStr:SetText(COL_GOLD .. "Leg Tracker - " .. COL_RESET .. COL_PURPLE .. "Midnight" .. COL_RESET)
   logoLeft:SetPoint("RIGHT",  titleStr, "LEFT",  -6, 0)
   logoRight:SetPoint("LEFT",  titleStr, "RIGHT",  6, 0)
 
@@ -1516,6 +1516,10 @@ evFrame:SetScript("OnEvent", function(_, event, arg1)
       mainFrame:Show() ; mainFrame:RefreshContent()
     end
 
+  elseif event == "ADDON_LOADED" and arg1 == "TibiSuite" then
+    -- TibiSuite est présent : il gère le bouton minimap unifié
+    if minimapBtn then minimapBtn:Hide() end
+
   elseif event == "PLAYER_LOGIN" then
     local _, cls = UnitClass("player")
     PLAYER_CLASS = cls
@@ -1542,3 +1546,17 @@ evFrame:SetScript("OnEvent", function(_, event, arg1)
   end
 
 end)
+
+-- ================================================================
+-- TOGGLE PUBLIC -- appelé par TibiSuite
+-- ================================================================
+function LegTracker_Toggle()
+  if mainFrame:IsShown() then
+    mainFrame:Hide()
+    LegTrackerDB.open = false
+  else
+    mainFrame:Show()
+    mainFrame:RefreshContent()
+    LegTrackerDB.open = true
+  end
+end
