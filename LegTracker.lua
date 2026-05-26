@@ -2,10 +2,10 @@
 -- LegTracker v2.0
 -- Suivi des objets legendaires de toutes les extensions WoW
 -- Auteur : Tibiscui - Kirin Tor
--- Design & architecture bases sur TibiRepTrackerV3
+-- Design & architecture propre a LegTracker
 -- ================================================================
 -- NOUVEAUTES v2.0 :
---   * Onglets verticaux style TibiRepTracker (Midnight en haut)
+--   * Onglets verticaux (Midnight en haut)
 --   * Icones d'extension visibles dans les onglets
 --   * Suivi compte complet : scanne tous vos personnages connus
 --   * Affiche quel personnage detient chaque legendaire
@@ -18,7 +18,7 @@ local L     = LegTrackerL or {}
 local function T(key, default) return L[key] or default end
 
 -- ================================================================
--- COULEURS GLOBALES (identiques a TibiRepTracker)
+-- COULEURS GLOBALES
 -- ================================================================
 local COL_GOLD   = "|cFFFFD700"
 local COL_PURPLE = "|cFF9480FF"
@@ -851,7 +851,7 @@ local function RefreshDetail(item)
 end
 
 -- ================================================================
--- CONSTRUCTION UI PRINCIPALE (onglets verticaux style TibiRepTracker)
+-- CONSTRUCTION UI PRINCIPALE (onglets verticaux)
 -- ================================================================
 local mainFrame, minimapBtn
 
@@ -1330,7 +1330,7 @@ local function BuildUI()
 end
 
 -- ================================================================
--- BOUTON MINIMAP (style TibiRepTracker)
+-- BOUTON MINIMAP
 -- ================================================================
 local function GetMinimapRadius()
   return (Minimap:GetWidth() / 2) + 10
@@ -1512,9 +1512,7 @@ evFrame:SetScript("OnEvent", function(_, event, arg1)
 
     -- La taille de fenetre est desormais fixe, on n'applique plus la taille sauvegardee
 
-    if LegTrackerDB.open then
-      mainFrame:Show() ; mainFrame:RefreshContent()
-    end
+    LegTrackerDB.open = false  -- ferme automatiquement au login
 
   elseif event == "ADDON_LOADED" and arg1 == "TibiSuite" then
     -- TibiSuite est présent : il gère le bouton minimap unifié
