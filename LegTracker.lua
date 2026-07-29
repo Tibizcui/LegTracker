@@ -1,5 +1,5 @@
 -- ================================================================
--- LegTracker v2.0
+-- LegTracker v3.0
 -- Suivi des objets legendaires de toutes les extensions WoW
 -- Auteur : Tibiscui - Kirin Tor
 -- Design & architecture propre a LegTracker
@@ -160,6 +160,28 @@ local function InitDB()
   if db.sections == nil       then db.sections = {} end
   -- Donnees de compte : db.accountData[realm][charName][itemID] = true
   if not db.accountData       then db.accountData = {} end
+
+  -- Options
+  if not db.filters           then db.filters = {} end
+  if db.filters.hideObtained    == nil then db.filters.hideObtained    = false end
+  if db.filters.hideUnavailable == nil then db.filters.hideUnavailable = false end
+  if db.filters.hideLegacy      == nil then db.filters.hideLegacy      = false end
+  if db.scale       == nil    then db.scale       = 1.0 end
+  if db.alpha       == nil    then db.alpha       = 0.97 end
+  if db.locked      == nil    then db.locked      = false end
+  if db.showMinimap == nil    then db.showMinimap = true end
+  if db.autoOpen    == nil    then db.autoOpen    = false end
+  -- db.width / db.height : renseignes seulement apres un redimensionnement manuel
+end
+
+-- Filtre d'affichage : true = l'item doit etre visible
+local function ItemPassesFilter(item)
+  local f  = (LegTrackerDB and LegTrackerDB.filters) or {}
+  local st = item._status
+  if f.hideObtained    and st == "OBTAINED"    then return false end
+  if f.hideUnavailable and st == "UNAVAILABLE" then return false end
+  if f.hideLegacy      and item.legacy         then return false end
+  return true
 end
 
 -- ================================================================
@@ -524,6 +546,7 @@ local detailFrame
 
 local function RefreshDetail(item)
   if not detailFrame then return end
+  if not item then return end
   ClearChildren(detailFrame)
 
   local W  = detailFrame:GetWidth() - 20
@@ -604,8 +627,8 @@ local function RefreshDetail(item)
   srcFS:SetWordWrap(true)
   srcFS:SetJustifyH("LEFT")
   srcFS:SetText("|cFFCCBB88" .. (item.source or T("UNKNOWN","Inconnu")) .. COL_RESET)
-  local srcLen = string.len(item.source or "")
-  local srcH   = math.max(40, math.ceil(srcLen / 38) * 14)
+  -- Hauteur reelle mesuree apres rendu (evite le chevauchement des sections)
+  local srcH = math.max(28, math.ceil(srcFS:GetStringHeight()) + 6)
   y = y - srcH
 
   MakeSeparator(detailFrame, 8, y, W + 4)
@@ -756,20 +779,12 @@ local function RefreshDetail(item)
         local ok     = count >= need
         local pct    = math.min(1.0, count / need)
         local howTo  = GetHowToObtain(tr)
-        local rowH   = howTo and 72 or 50
 
         local cRow = CreateFrame("Button", nil, detailFrame, "BackdropTemplate")
-        cRow:SetSize(W, rowH)
         cRow:SetPoint("TOPLEFT", 10, y)
         cRow:SetBackdrop(BACKDROP_ROW)
         cRow:SetBackdropColor(cColor.r*0.06, cColor.g*0.06, cColor.b*0.06, ok and 0.4 or 0.85)
         cRow:SetBackdropBorderColor(cColor.r*0.4, cColor.g*0.4, cColor.b*0.4, ok and 0.3 or 0.7)
-
-        local cs = cRow:CreateTexture(nil, "ARTWORK")
-        cs:SetPoint("TOPLEFT", cRow, "TOPLEFT", 2, -2)
-        cs:SetSize(4, rowH - 4)
-        cs:SetTexture("Interface\\BUTTONS\\WHITE8X8")
-        cs:SetVertexColor(ok and 0.27 or cColor.r, ok and 1.00 or cColor.g, ok and 0.27 or cColor.b, 0.9)
 
         -- Icone du composant
         local cIconTex = cRow:CreateTexture(nil, "ARTWORK")
@@ -804,7 +819,8 @@ local function RefreshDetail(item)
         barFill:SetWidth(fillW)
         barFill:SetVertexColor(ok and 0.27 or cColor.r, ok and 1.00 or cColor.g, ok and 0.27 or cColor.b, 1.0)
 
-        -- "Comment obtenir" ce composant
+        -- "Comment obtenir" ce composant : hauteur mesuree pour eviter le chevauchement
+        local rowH = 50
         if howTo then
           local howFS = cRow:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
           howFS:SetPoint("TOPLEFT", cRow, "TOPLEFT", 10, -40)
@@ -812,7 +828,17 @@ local function RefreshDetail(item)
           howFS:SetWordWrap(true)
           howFS:SetJustifyH("LEFT")
           howFS:SetText("|cFF888888 " .. howTo .. "|r")
+          rowH = math.max(50, 44 + math.ceil(howFS:GetStringHeight()) + 6)
         end
+
+        cRow:SetSize(W, rowH)
+
+        -- Bande laterale de statut (dimensionnee apres calcul de rowH)
+        local cs = cRow:CreateTexture(nil, "ARTWORK")
+        cs:SetPoint("TOPLEFT", cRow, "TOPLEFT", 2, -2)
+        cs:SetSize(4, rowH - 4)
+        cs:SetTexture("Interface\\BUTTONS\\WHITE8X8")
+        cs:SetVertexColor(ok and 0.27 or cColor.r, ok and 1.00 or cColor.g, ok and 0.27 or cColor.b, 0.9)
 
         cRow:SetScript("OnEnter", function(s)
           if tr.itemID and tr.itemID > 0 then
@@ -855,6 +881,202 @@ end
 -- ================================================================
 local mainFrame, minimapBtn
 
+-- ================================================================
+-- LIGNES DE LISTE REUTILISABLES (pool par index)
+-- Le squelette (frame + sous-elements) est construit UNE SEULE fois par
+-- ligne ; les rafraichissements ne font que mettre a jour les proprietes.
+-- Evite la creation de frames a chaque refresh (fuite memoire / taint).
+-- ================================================================
+local function MakeListRow(parent)
+  local row = CreateFrame("Button", nil, parent, "BackdropTemplate")
+  row:SetSize(290, 64)
+  row:SetBackdrop(BACKDROP_ROW)
+
+  row.stripe = row:CreateTexture(nil, "ARTWORK")
+  row.stripe:SetPoint("TOPLEFT", row, "TOPLEFT", 2, -2)
+  row.stripe:SetTexture("Interface\\BUTTONS\\WHITE8X8")
+
+  row.icon = row:CreateTexture(nil, "ARTWORK")
+  row.icon:SetSize(34, 34)
+
+  row.nameFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  row.nameFS:SetPoint("TOPLEFT", row, "TOPLEFT", 50, -5)
+  row.nameFS:SetWidth(234)
+  row.nameFS:SetWordWrap(true)
+  row.nameFS:SetJustifyH("LEFT")
+
+  row.subFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  row.subFS:SetPoint("TOPLEFT", row, "TOPLEFT", 50, -22)
+  row.subFS:SetWidth(234)
+  row.subFS:SetJustifyH("LEFT")
+
+  -- Barre de progression (masquee par defaut, affichee pour les items en cours)
+  row.barBg = CreateFrame("Frame", nil, row, "BackdropTemplate")
+  row.barBg:SetPoint("BOTTOMLEFT",  row, "BOTTOMLEFT",  50, 8)
+  row.barBg:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 8)
+  row.barBg:SetHeight(8)
+  row.barBg:SetBackdrop(BACKDROP_ROW)
+  row.barBg:SetBackdropColor(0, 0, 0, 0.7)
+
+  row.barFill = row.barBg:CreateTexture(nil, "ARTWORK")
+  row.barFill:SetPoint("TOPLEFT", row.barBg, "TOPLEFT", 2, -2)
+  row.barFill:SetHeight(4)
+  row.barFill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
+
+  row.pctFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  row.pctFS:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 7)
+
+  row:SetScript("OnClick", function(s)
+    local item = s.item
+    if not item then return end
+    mainFrame.selectedItem = item
+    RefreshDetail(item)
+    if mainFrame.listRows then
+      for _, r in ipairs(mainFrame.listRows) do
+        if r:IsShown() and r._sc then
+          r:SetBackdropBorderColor(r._sc.r*0.4, r._sc.g*0.4, r._sc.b*0.4, 0.7)
+        end
+      end
+    end
+    s:SetBackdropBorderColor(0.72, 0.60, 0.28, 1.0)
+  end)
+
+  row:SetScript("OnEnter", function(s)
+    local item = s.item
+    s:SetBackdropBorderColor(0.72, 0.60, 0.28, 1.0)
+    GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
+    if item and item.itemID and item.itemID > 0 then
+      GameTooltip:SetItemByID(item.itemID)
+    else
+      GameTooltip:SetText((item and item.name) or "A completer")
+    end
+    if item and s._inProgress then
+      GameTooltip:AddLine(" ")
+      GameTooltip:AddLine("Progression :", 0.95, 0.78, 0.35)
+      local qD, qT = item._qDone or 0, item._qTotal or 0
+      local tD, tT = item._tDone or 0, item._tTotal or 0
+      if qT > 0 then GameTooltip:AddLine(string.format("  Quêtes : %d / %d", qD, qT), 0.30, 0.60, 1.0) end
+      if tT > 0 then GameTooltip:AddLine(string.format("  Composants : %d / %d", tD, tT), 1.0, 0.82, 0.0) end
+    end
+    if item and s._obtained and item.itemID and item.itemID > 0 then
+      local chars = GetCharsWithItem(item.itemID)
+      if IsObtainedOnCurrentChar(item.itemID) and PLAYER_NAME then
+        local cur = PLAYER_NAME .. " (" .. (PLAYER_REALM or "?") .. ")"
+        local found = false
+        for _, ch in ipairs(chars) do if ch.display == cur then found = true break end end
+        if not found then
+          table.insert(chars, { display=cur, name=PLAYER_NAME, realm=PLAYER_REALM or "?", class=PLAYER_CLASS })
+        end
+      end
+      if #chars > 0 then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Detenu par :", 0.95, 0.78, 0.35)
+        for _, ch in ipairs(chars) do
+          local hex = ch.class and CLASS_COLORS[ch.class] or nil
+          if hex then
+            local r = tonumber(hex:sub(1,2),16)/255
+            local g = tonumber(hex:sub(3,4),16)/255
+            local b = tonumber(hex:sub(5,6),16)/255
+            GameTooltip:AddLine("  " .. ch.display, r, g, b)
+          else
+            GameTooltip:AddLine("  " .. ch.display, 0.7, 1.0, 0.7)
+          end
+        end
+      end
+    end
+    GameTooltip:Show()
+  end)
+
+  row:SetScript("OnLeave", function(s)
+    GameTooltip:Hide()
+    local dispSc = s._dispSc
+    if dispSc then
+      s:SetBackdropBorderColor(dispSc.r*0.4, dispSc.g*0.4, dispSc.b*0.4, s._obtained and 0.3 or 0.7)
+    end
+  end)
+
+  return row
+end
+
+-- Met a jour une ligne existante pour representer 'item' (aucune allocation)
+-- rowW : largeur cible (permet l'etirement lors d'un redimensionnement)
+local function FillListRow(row, item, rowW)
+  rowW = rowW or 290
+  local equippable = HasClass(item)
+  local status     = item._status or "MISSING"
+  local sc         = STATUS_COLORS[status] or STATUS_COLORS["MISSING"]
+  local obtained   = status == "OBTAINED"
+  local inProgress = status == "IN_PROGRESS"
+  local dispSc     = obtained and STATUS_COLORS["OBTAINED"] or sc
+  local rowH       = (inProgress and equippable) and 82 or 64
+
+  row.item        = item
+  row._sc         = dispSc
+  row._dispSc     = dispSc
+  row._obtained   = obtained
+  row._inProgress = inProgress
+
+  row:SetSize(rowW, rowH)
+  row.nameFS:SetWidth(rowW - 56)
+  row.subFS:SetWidth(rowW - 56)
+  row:SetBackdropColor(dispSc.r*0.06, dispSc.g*0.06, dispSc.b*0.06, obtained and 0.4 or 0.85)
+  row:SetBackdropBorderColor(dispSc.r*0.4, dispSc.g*0.4, dispSc.b*0.4, obtained and 0.3 or 0.7)
+
+  row.stripe:SetSize(4, rowH - 4)
+  if obtained then
+    row.stripe:SetVertexColor(0.27, 1.00, 0.27, 0.9)
+  else
+    row.stripe:SetVertexColor(sc.r, sc.g, sc.b, 0.9)
+  end
+
+  row.icon:ClearAllPoints()
+  row.icon:SetPoint("LEFT", 10, inProgress and 6 or 0)
+  row.icon:SetTexture(GetIcon(item.itemID))
+  row.icon:SetDesaturated((not obtained and not equippable) and true or false)
+
+  local nameCol = obtained and COL_GREEN or (equippable and COL_WHITE or COL_GREY)
+  local prefix  = obtained and (COL_GREEN .. "* " .. COL_RESET) or ""
+  row.nameFS:SetText(prefix .. nameCol .. GetItemName(item) .. COL_RESET)
+
+  -- Par defaut : barre masquee, pourcentage vide
+  row.barBg:Hide()
+  row.pctFS:SetText("")
+
+  if item.placeholder then
+    row.subFS:SetText(COL_GREY .. "A completer" .. COL_RESET)
+  elseif obtained then
+    local ownerStr = item.itemID and item.itemID > 0 and GetOwnersText(item.itemID, true) or nil
+    if ownerStr then
+      row.subFS:SetText(COL_GREEN .. "[Obtenu]" .. COL_RESET .. "  " .. ownerStr)
+    else
+      row.subFS:SetText(COL_GREEN .. "[Obtenu]" .. COL_RESET)
+    end
+  elseif not equippable then
+    row.subFS:SetText(GetClassesText(item))
+  elseif inProgress then
+    local qD, qT = item._qDone or 0, item._qTotal or 0
+    local tD, tT = item._tDone or 0, item._tTotal or 0
+    local parts = {}
+    if qT > 0 then table.insert(parts, string.format("|cFF4D99FFQuêtes %d/%d|r", qD, qT)) end
+    if tT > 0 then table.insert(parts, string.format("|cFFFFCC00Compos. %d/%d|r", tD, tT)) end
+    row.subFS:SetText(COL_YELLOW .. "[En cours] " .. COL_RESET
+                      .. (#parts > 0 and table.concat(parts, "  ") or ""))
+
+    local totalDone  = (item._qDone or 0) + (item._tDone or 0)
+    local totalTotal = (item._qTotal or 0) + (item._tTotal or 0)
+    local pct = (totalTotal > 0) and math.min(1.0, totalDone / totalTotal) or 0
+
+    row.barBg:SetBackdropBorderColor(sc.r*0.4, sc.g*0.4, sc.b*0.4, 0.6)
+    row.barFill:SetWidth(math.max(2, math.floor((rowW - 66) * pct)))
+    row.barFill:SetVertexColor(sc.r, sc.g, sc.b, 1.0)
+    row.barBg:Show()
+
+    row.pctFS:SetText(string.format("|cFFFFCC00%d%%|r", math.floor(pct * 100)))
+  else
+    row.subFS:SetText(COL_RED .. "[Non obtenu]" .. COL_RESET)
+  end
+end
+
 local function BuildUI()
 
   local TAB_COL_W = 100
@@ -870,19 +1092,38 @@ local function BuildUI()
   mainFrame:SetBackdropBorderColor(0.72, 0.60, 0.28, 1.0)
   mainFrame:SetFrameStrata("HIGH")
   mainFrame:SetMovable(true)
+  mainFrame:SetResizable(true)
   mainFrame:EnableMouse(true)
   mainFrame:RegisterForDrag("LeftButton")
-  mainFrame:SetScript("OnDragStart", mainFrame.StartMoving)
+  mainFrame:SetScript("OnDragStart", function(s)
+    if not (LegTrackerDB and LegTrackerDB.locked) then s:StartMoving() end
+  end)
   mainFrame:SetScript("OnDragStop", function(s)
     s:StopMovingOrSizing()
     local _, _, _, x, y = s:GetPoint()
     LegTrackerDB.pos = {x=x, y=y}
   end)
+
+  -- Bornes de redimensionnement (API moderne avec repli)
+  if mainFrame.SetResizeBounds then
+    mainFrame:SetResizeBounds(680, 440, 1400, 1100)
+  elseif mainFrame.SetMinResize then
+    mainFrame:SetMinResize(680, 440)
+    mainFrame:SetMaxResize(1400, 1100)
+  end
+  mainFrame.defaultW = FRAME_W
+  mainFrame.defaultH = FRAME_H
   mainFrame:SetScript("OnKeyDown", function(self, key)
     if key == "ESCAPE" then self:Hide() ; LegTrackerDB.open = false end
   end)
   mainFrame:EnableKeyboard(true)
   mainFrame:SetPropagateKeyboardInput(true)
+
+  -- Fermeture ESC native (comportement standard Blizzard) + synchro du flag.
+  tinsert(UISpecialFrames, "LegTrackerMainFrame")
+  mainFrame:SetScript("OnHide", function()
+    if LegTrackerDB then LegTrackerDB.open = false end
+  end)
   -- Redimensionnement manuel desactive : la fenetre s'adapte au contenu
 
   -- Titre
@@ -1064,10 +1305,18 @@ local function BuildUI()
   local listScroll = CreateFrame("ScrollFrame", "TibiLegListScroll", listBg, "UIPanelScrollFrameTemplate")
   listScroll:SetPoint("TOPLEFT",     listBg, "TOPLEFT",     5,  -5)
   listScroll:SetPoint("BOTTOMRIGHT", listBg, "BOTTOMRIGHT", -22, 5)
+  mainFrame.listScroll = listScroll
 
   mainFrame.listContent = CreateFrame("Frame", nil, listScroll)
   mainFrame.listContent:SetWidth(300)
   listScroll:SetScrollChild(mainFrame.listContent)
+
+  -- Message affiche quand les filtres masquent tout
+  mainFrame.emptyFS = mainFrame.listContent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  mainFrame.emptyFS:SetPoint("TOPLEFT", 6, -10)
+  mainFrame.emptyFS:SetWidth(260)
+  mainFrame.emptyFS:SetJustifyH("LEFT")
+  mainFrame.emptyFS:Hide()
 
   -- Panneau detail (colonne droite)
   detailFrame = CreateFrame("Frame", "TibiLegDetailFrame", nil, "BackdropTemplate")
@@ -1089,7 +1338,246 @@ local function BuildUI()
   detailFrame:SetWidth(rightW - 16)
   detailScroll:SetScrollChild(detailFrame)
 
-  -- Poignee de redimensionnement supprimee : la fenetre s'adapte automatiquement
+  -- ================================================================
+  -- APPLICATION DES OPTIONS (echelle, opacite, minimap, verrou)
+  -- ================================================================
+  function mainFrame:ApplyOptions()
+    local db = LegTrackerDB
+    if not db then return end
+    self:SetScale(db.scale or 1.0)
+    self:SetBackdropColor(0.04, 0.02, 0.06, db.alpha or 0.97)
+    if minimapBtn then
+      if db.showMinimap == false then minimapBtn:Hide() else minimapBtn:Show() end
+    end
+    if self.resizeBtn then
+      if db.locked then self.resizeBtn:Hide() else self.resizeBtn:Show() end
+    end
+  end
+
+  -- ================================================================
+  -- POIGNEE DE REDIMENSIONNEMENT (bas droite)
+  -- ================================================================
+  local resizeBtn = CreateFrame("Button", nil, mainFrame)
+  resizeBtn:SetSize(16, 16)
+  resizeBtn:SetPoint("BOTTOMRIGHT", -6, 7)
+  resizeBtn:SetFrameLevel(mainFrame:GetFrameLevel() + 5)
+  resizeBtn:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+  resizeBtn:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+  resizeBtn:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+  resizeBtn:SetScript("OnMouseDown", function()
+    if not (LegTrackerDB and LegTrackerDB.locked) then mainFrame:StartSizing("BOTTOMRIGHT") end
+  end)
+  resizeBtn:SetScript("OnMouseUp", function()
+    mainFrame:StopMovingOrSizing()
+    LegTrackerDB.width  = math.floor(mainFrame:GetWidth())
+    LegTrackerDB.height = math.floor(mainFrame:GetHeight())
+    mainFrame:RefreshContent()
+  end)
+  resizeBtn:SetScript("OnEnter", function(s)
+    GameTooltip:SetOwner(s, "ANCHOR_LEFT")
+    GameTooltip:AddLine("Etirer la fenetre", 0.95, 0.78, 0.35)
+    GameTooltip:Show()
+  end)
+  resizeBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  mainFrame.resizeBtn = resizeBtn
+
+  -- ================================================================
+  -- BOUTON OPTIONS (roue crantee, en haut a droite)
+  -- ================================================================
+  local optBtn = CreateFrame("Button", nil, mainFrame)
+  optBtn:SetSize(22, 22)
+  optBtn:SetPoint("TOPRIGHT", -30, -6)
+  optBtn:SetNormalTexture("Interface\\Buttons\\UI-OptionsButton")
+  optBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+  optBtn:SetScript("OnEnter", function(s)
+    GameTooltip:SetOwner(s, "ANCHOR_LEFT")
+    GameTooltip:AddLine("Options", 0.95, 0.78, 0.35)
+    GameTooltip:Show()
+  end)
+  optBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+  -- ================================================================
+  -- CASE "MASQUER OBTENUS" toujours visible (acces rapide)
+  -- ================================================================
+  local hideObtLabel = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  hideObtLabel:SetText("|cFFDDDDDDMasquer obtenus|r")
+  hideObtLabel:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -(rightW + 26), -50)
+
+  local hideObtCheck = CreateFrame("CheckButton", nil, mainFrame, "UICheckButtonTemplate")
+  hideObtCheck:SetSize(22, 22)
+  hideObtCheck:SetPoint("LEFT", hideObtLabel, "RIGHT", 2, 0)
+  hideObtCheck:SetScript("OnClick", function(s)
+    LegTrackerDB.filters = LegTrackerDB.filters or {}
+    LegTrackerDB.filters.hideObtained = s:GetChecked() and true or false
+    mainFrame:RefreshContent()
+    if mainFrame.optHideObtained then
+      mainFrame.optHideObtained:SetChecked(LegTrackerDB.filters.hideObtained)
+    end
+  end)
+  hideObtCheck:SetScript("OnEnter", function(s)
+    GameTooltip:SetOwner(s, "ANCHOR_LEFT")
+    GameTooltip:AddLine("Masquer / afficher les objets deja obtenus", 0.9, 0.9, 0.9)
+    GameTooltip:Show()
+  end)
+  hideObtCheck:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  mainFrame.hideObtainedCheck = hideObtCheck
+
+  -- ================================================================
+  -- PANNEAU OPTIONS
+  -- ================================================================
+  local optPanel = CreateFrame("Frame", "LegTrackerOptionsPanel", mainFrame, "BackdropTemplate")
+  optPanel:SetSize(300, 400)
+  optPanel:SetPoint("TOPLEFT", mainFrame, "TOPRIGHT", 8, 0)
+  optPanel:SetBackdrop(BACKDROP_MAIN)
+  optPanel:SetBackdropColor(0.04, 0.02, 0.06, 0.98)
+  optPanel:SetBackdropBorderColor(0.72, 0.60, 0.28, 1.0)
+  optPanel:SetFrameStrata("DIALOG")
+  optPanel:EnableMouse(true)
+  optPanel:Hide()
+
+  local optTitle = optPanel:CreateFontString(nil, "OVERLAY")
+  optTitle:SetFont("Fonts\\FRIZQT__.TTF", 13, "OUTLINE")
+  optTitle:SetPoint("TOP", 0, -14)
+  optTitle:SetText(COL_GOLD .. "Options LegTracker" .. COL_RESET)
+
+  local optClose = CreateFrame("Button", nil, optPanel, "UIPanelCloseButton")
+  optClose:SetPoint("TOPRIGHT", -4, -4)
+  optClose:SetScript("OnClick", function() optPanel:Hide() end)
+
+  local oy = -44
+
+  -- Helper : case a cocher avec libelle
+  local function AddCheck(label, tooltip, getFn, setFn)
+    local cb = CreateFrame("CheckButton", nil, optPanel, "UICheckButtonTemplate")
+    cb:SetSize(24, 24)
+    cb:SetPoint("TOPLEFT", 16, oy)
+    local fs = optPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fs:SetPoint("LEFT", cb, "RIGHT", 4, 0)
+    fs:SetText("|cFFEEEEEE" .. label .. "|r")
+    cb:SetChecked(getFn() and true or false)
+    cb:SetScript("OnClick", function(s) setFn(s:GetChecked() and true or false) end)
+    if tooltip then
+      cb:SetScript("OnEnter", function(s)
+        GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(tooltip, 0.9, 0.9, 0.9, true)
+        GameTooltip:Show()
+      end)
+      cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
+    oy = oy - 28
+    return cb
+  end
+
+  -- Helper : curseur (avec libelle propre, sans dependre des sous-frames nommees)
+  local function AddSlider(label, minV, maxV, step, getFn, setFn, fmt)
+    local cap = optPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    cap:SetPoint("TOPLEFT", 24, oy)
+    local function setCap(v)
+      cap:SetText("|cFFEEEEEE" .. (fmt and string.format(fmt, v) or label) .. "|r")
+    end
+    local sl = CreateFrame("Slider", nil, optPanel, "OptionsSliderTemplate")
+    sl:SetSize(250, 16)
+    sl:SetPoint("TOPLEFT", 24, oy - 16)
+    sl:SetMinMaxValues(minV, maxV)
+    sl:SetValueStep(step)
+    sl:SetObeyStepOnDrag(true)
+    -- Neutralise les libelles par defaut du template (peuvent etre nil si anonyme)
+    if sl.Low  then sl.Low:SetText("")  end
+    if sl.High then sl.High:SetText("") end
+    if sl.Text then sl.Text:SetText("") end
+    setCap(getFn())
+    sl:SetValue(getFn())
+    sl:SetScript("OnValueChanged", function(_, v)
+      setFn(v) ; setCap(v)
+    end)
+    oy = oy - 46
+    return sl
+  end
+
+  -- --- Filtres ---
+  local secFilters = optPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  secFilters:SetPoint("TOPLEFT", 14, oy)
+  secFilters:SetText(COL_YELLOW .. "Filtres d'affichage" .. COL_RESET)
+  oy = oy - 22
+
+  mainFrame.optHideObtained = AddCheck("Masquer les objets obtenus",
+    "Cache les legendaires deja possedes sur le compte.",
+    function() return (LegTrackerDB.filters or {}).hideObtained end,
+    function(v)
+      LegTrackerDB.filters.hideObtained = v
+      if mainFrame.hideObtainedCheck then mainFrame.hideObtainedCheck:SetChecked(v) end
+      mainFrame:RefreshContent()
+    end)
+
+  AddCheck("Masquer les non-equipables",
+    "Cache les objets reserves a d'autres classes.",
+    function() return (LegTrackerDB.filters or {}).hideUnavailable end,
+    function(v) LegTrackerDB.filters.hideUnavailable = v ; mainFrame:RefreshContent() end)
+
+  AddCheck("Masquer les objets legacy",
+    "Cache les objets d'anciennes versions non obtenables aujourd'hui.",
+    function() return (LegTrackerDB.filters or {}).hideLegacy end,
+    function(v) LegTrackerDB.filters.hideLegacy = v ; mainFrame:RefreshContent() end)
+
+  -- --- Fenetre ---
+  local secWin = optPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  secWin:SetPoint("TOPLEFT", 14, oy - 4)
+  secWin:SetText(COL_YELLOW .. "Fenetre" .. COL_RESET)
+  oy = oy - 26
+
+  AddSlider("Echelle", 0.7, 1.4, 0.05,
+    function() return LegTrackerDB.scale or 1.0 end,
+    function(v) LegTrackerDB.scale = v ; mainFrame:ApplyOptions() end,
+    "Echelle : %.2f")
+
+  AddSlider("Opacite", 0.4, 1.0, 0.05,
+    function() return LegTrackerDB.alpha or 0.97 end,
+    function(v) LegTrackerDB.alpha = v ; mainFrame:ApplyOptions() end,
+    "Opacite : %.2f")
+
+  AddCheck("Verrouiller la position",
+    "Empeche de deplacer ou redimensionner la fenetre par accident.",
+    function() return LegTrackerDB.locked end,
+    function(v) LegTrackerDB.locked = v ; mainFrame:ApplyOptions() end)
+
+  AddCheck("Afficher le bouton minimap",
+    "Affiche ou masque l'icone sur la minicarte.",
+    function() return LegTrackerDB.showMinimap ~= false end,
+    function(v) LegTrackerDB.showMinimap = v ; mainFrame:ApplyOptions() end)
+
+  AddCheck("Ouvrir automatiquement au login",
+    "Rouvre la fenetre a la connexion.",
+    function() return LegTrackerDB.autoOpen end,
+    function(v) LegTrackerDB.autoOpen = v end)
+
+  -- --- Boutons d'action ---
+  local resetBtn = CreateFrame("Button", nil, optPanel, "UIPanelButtonTemplate")
+  resetBtn:SetSize(130, 22)
+  resetBtn:SetPoint("TOPLEFT", 16, oy - 6)
+  resetBtn:SetText("Recentrer")
+  resetBtn:SetScript("OnClick", function()
+    LegTrackerDB.pos = {x=0, y=0}
+    mainFrame:ClearAllPoints()
+    mainFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  end)
+
+  local autoFitBtn = CreateFrame("Button", nil, optPanel, "UIPanelButtonTemplate")
+  autoFitBtn:SetSize(130, 22)
+  autoFitBtn:SetPoint("LEFT", resetBtn, "RIGHT", 8, 0)
+  autoFitBtn:SetText("Taille par defaut")
+  autoFitBtn:SetScript("OnClick", function()
+    LegTrackerDB.width  = mainFrame.defaultW
+    LegTrackerDB.height = mainFrame.defaultH
+    mainFrame:SetSize(mainFrame.defaultW, mainFrame.defaultH)
+    mainFrame:RefreshContent()
+  end)
+
+  optPanel:SetHeight(-oy + 48)
+
+  optBtn:SetScript("OnClick", function()
+    if optPanel:IsShown() then optPanel:Hide() else optPanel:Show() end
+  end)
+  mainFrame.optPanel = optPanel
 
   -- ================================================================
   -- RAFRAICHISSEMENT PRINCIPAL
@@ -1145,185 +1633,80 @@ local function BuildUI()
         math.floor(c.r*255), math.floor(c.g*255), math.floor(c.b*255), ext.label, got, total)
     )
 
-    ClearChildren(self.listContent)
+    -- Applique les filtres d'affichage (options)
+    local items = {}
+    for _, it in ipairs(ext.items or {}) do
+      if ItemPassesFilter(it) then items[#items + 1] = it end
+    end
 
+    -- Largeur cible des lignes : s'etire avec la fenetre (redimensionnement)
+    local vw = self.listScroll and self.listScroll:GetWidth() or 300
+    if not vw or vw < 120 then vw = 300 end
+    local rowW = math.floor(vw - 4)
+    self.listContent:SetWidth(vw)
+
+    -- Pool par index : on reutilise les lignes existantes au lieu d'en creer
+    -- de nouvelles a chaque rafraichissement.
+    self.listRows = self.listRows or {}
     local y = 0
     local firstItem = nil
 
-    for idx, item in ipairs(ext.items or {}) do
-      local equippable = HasClass(item)
-      local status     = item._status or "MISSING"
-      local sc         = STATUS_COLORS[status] or STATUS_COLORS["MISSING"]
-      local obtained    = status == "OBTAINED"
-      local inProgress  = status == "IN_PROGRESS"
-      -- Couleur effective : verte si obtenu (meme par un autre perso), sinon couleur du statut
-      local dispSc      = obtained and STATUS_COLORS["OBTAINED"] or sc
-      local rowH        = (inProgress and equippable) and 82 or 64
-
-      local row = CreateFrame("Button", nil, self.listContent, "BackdropTemplate")
-      row:SetSize(290, rowH)
+    for idx, item in ipairs(items) do
+      local row = self.listRows[idx]
+      if not row then
+        row = MakeListRow(self.listContent)
+        self.listRows[idx] = row
+      end
+      FillListRow(row, item, rowW)
+      row:ClearAllPoints()
       row:SetPoint("TOPLEFT", 0, -y)
-      row:SetBackdrop(BACKDROP_ROW)
-      row:SetBackdropColor(dispSc.r*0.06, dispSc.g*0.06, dispSc.b*0.06, obtained and 0.4 or 0.85)
-      row:SetBackdropBorderColor(dispSc.r*0.4, dispSc.g*0.4, dispSc.b*0.4, obtained and 0.3 or 0.7)
-
-      -- Barre verticale : vert vif si obtenu, couleur statut sinon
-      local stripe = row:CreateTexture(nil, "ARTWORK")
-      stripe:SetPoint("TOPLEFT", row, "TOPLEFT", 2, -2)
-      stripe:SetSize(4, rowH - 4)
-      stripe:SetTexture("Interface\\BUTTONS\\WHITE8X8")
-      if obtained then
-        stripe:SetVertexColor(0.27, 1.00, 0.27, 0.9)
-      else
-        stripe:SetVertexColor(sc.r, sc.g, sc.b, 0.9)
-      end
-
-      -- Icone : en couleur si obtenu (meme non equippable), desature seulement si non obtenu ET non equippable
-      local iconTex = row:CreateTexture(nil, "ARTWORK")
-      iconTex:SetSize(34, 34)
-      iconTex:SetPoint("LEFT", 10, inProgress and 6 or 0)
-      iconTex:SetTexture(GetIcon(item.itemID))
-      if not obtained and not equippable then iconTex:SetDesaturated(true) end
-
-      local nameFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-      nameFS:SetPoint("TOPLEFT", row, "TOPLEFT", 50, -5)
-      nameFS:SetWidth(234)
-      nameFS:SetWordWrap(true)
-      nameFS:SetJustifyH("LEFT")
-      -- Nom en vert si obtenu, blanc si equippable, gris sinon
-      local nameCol = obtained and COL_GREEN or (equippable and COL_WHITE or COL_GREY)
-      local prefix  = obtained and (COL_GREEN .. "* " .. COL_RESET) or ""
-      nameFS:SetText(prefix .. nameCol .. GetItemName(item) .. COL_RESET)
-
-      local subFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-      subFS:SetPoint("TOPLEFT", row, "TOPLEFT", 50, -22)
-      subFS:SetWidth(234)
-      subFS:SetJustifyH("LEFT")
-
-      -- Colonne centrale : statut uniquement, sans info perso (celle-ci est dans le panneau detail)
-      if item.placeholder then
-        subFS:SetText(COL_GREY .. "A completer" .. COL_RESET)
-      elseif obtained then
-        -- Obtenu : toujours vert meme si non equippable par le perso actuel
-        -- + balise coloree avec le/les noms des detenteurs (couleur de classe)
-        local ownerStr = item.itemID and item.itemID > 0 and GetOwnersText(item.itemID, true) or nil
-        if ownerStr then
-          subFS:SetText(COL_GREEN .. "[Obtenu]" .. COL_RESET .. "  " .. ownerStr)
-        else
-          subFS:SetText(COL_GREEN .. "[Obtenu]" .. COL_RESET)
-        end
-      elseif not equippable then
-        subFS:SetText(GetClassesText(item))
-      elseif inProgress then
-        -- Résumé progression quêtes + composants
-        local qD, qT = item._qDone or 0, item._qTotal or 0
-        local tD, tT = item._tDone or 0, item._tTotal or 0
-        local parts = {}
-        if qT > 0 then table.insert(parts, string.format("|cFF4D99FFQuêtes %d/%d|r", qD, qT)) end
-        if tT > 0 then table.insert(parts, string.format("|cFFFFCC00Compos. %d/%d|r", tD, tT)) end
-        subFS:SetText(COL_YELLOW .. "[En cours] " .. COL_RESET
-                      .. (#parts > 0 and table.concat(parts, "  ") or ""))
-
-        -- Barre de progression globale
-        local totalDone  = (item._qDone or 0) + (item._tDone or 0)
-        local totalTotal = (item._qTotal or 0) + (item._tTotal or 0)
-        local pct = (totalTotal > 0) and math.min(1.0, totalDone / totalTotal) or 0
-
-        -- Fond de barre
-        local barBg = CreateFrame("Frame", nil, row, "BackdropTemplate")
-        barBg:SetPoint("BOTTOMLEFT",  row, "BOTTOMLEFT",  50, 8)
-        barBg:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 8)
-        barBg:SetHeight(8)
-        barBg:SetBackdrop(BACKDROP_ROW)
-        barBg:SetBackdropColor(0, 0, 0, 0.7)
-        barBg:SetBackdropBorderColor(sc.r*0.4, sc.g*0.4, sc.b*0.4, 0.6)
-
-        -- Remplissage
-        local barFill = barBg:CreateTexture(nil, "ARTWORK")
-        barFill:SetPoint("TOPLEFT", barBg, "TOPLEFT", 2, -2)
-        barFill:SetHeight(4)
-        barFill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
-        barFill:SetWidth(math.max(2, math.floor((290 - 66) * pct)))
-        barFill:SetVertexColor(sc.r, sc.g, sc.b, 1.0)
-
-        -- Pourcentage texte
-        local pctFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        pctFS:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -8, 7)
-        pctFS:SetText(string.format("|cFFFFCC00%d%%|r", math.floor(pct * 100)))
-      else
-        subFS:SetText(COL_RED .. "[Non obtenu]" .. COL_RESET)
-      end
-
-      row:SetScript("OnClick", function()
-        RefreshDetail(item)
-        for _, r in ipairs({ self.listContent:GetChildren() }) do
-          if r.SetBackdropBorderColor and r._sc then
-            r:SetBackdropBorderColor(r._sc.r*0.4, r._sc.g*0.4, r._sc.b*0.4, 0.7)
-          end
-        end
-        row:SetBackdropBorderColor(0.72, 0.60, 0.28, 1.0)
-      end)
-      row._sc = dispSc
-
-      row:SetScript("OnEnter", function(s)
-        s:SetBackdropBorderColor(0.72, 0.60, 0.28, 1.0)
-        GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
-        if item.itemID and item.itemID > 0 then
-          GameTooltip:SetItemByID(item.itemID)
-        else
-          GameTooltip:SetText(item.name or "A completer")
-        end
-        if inProgress then
-          GameTooltip:AddLine(" ")
-          GameTooltip:AddLine("Progression :", 0.95, 0.78, 0.35)
-          local qD, qT = item._qDone or 0, item._qTotal or 0
-          local tD, tT = item._tDone or 0, item._tTotal or 0
-          if qT > 0 then
-            GameTooltip:AddLine(string.format("  Quêtes : %d / %d", qD, qT), 0.30, 0.60, 1.0)
-          end
-          if tT > 0 then
-            GameTooltip:AddLine(string.format("  Composants : %d / %d", tD, tT), 1.0, 0.82, 0.0)
-          end
-        end
-        if obtained and item.itemID and item.itemID > 0 then
-          local chars = GetCharsWithItem(item.itemID)
-          if IsObtainedOnCurrentChar(item.itemID) and PLAYER_NAME then
-            local cur = PLAYER_NAME .. " (" .. (PLAYER_REALM or "?") .. ")"
-            local found = false
-            for _, ch in ipairs(chars) do if ch.display == cur then found = true break end end
-            if not found then
-              table.insert(chars, { display=cur, name=PLAYER_NAME, realm=PLAYER_REALM or "?", class=PLAYER_CLASS })
-            end
-          end
-          if #chars > 0 then
-            GameTooltip:AddLine(" ")
-            GameTooltip:AddLine("Detenu par :", 0.95, 0.78, 0.35)
-            for _, ch in ipairs(chars) do
-              local hex = ch.class and CLASS_COLORS[ch.class] or nil
-              if hex then
-                local r = tonumber(hex:sub(1,2),16)/255
-                local g = tonumber(hex:sub(3,4),16)/255
-                local b = tonumber(hex:sub(5,6),16)/255
-                GameTooltip:AddLine("  " .. ch.display, r, g, b)
-              else
-                GameTooltip:AddLine("  " .. ch.display, 0.7, 1.0, 0.7)
-              end
-            end
-          end
-        end
-        GameTooltip:Show()
-      end)
-      row:SetScript("OnLeave", function(s)
-        GameTooltip:Hide()
-        s:SetBackdropBorderColor(dispSc.r*0.4, dispSc.g*0.4, dispSc.b*0.4, obtained and 0.3 or 0.7)
-      end)
-
-      y = y + rowH + 4
+      row:Show()
+      y = y + row:GetHeight() + 4
       if idx == 1 then firstItem = item end
     end
 
+    -- Masque les lignes en trop (extension plus courte ou items filtres)
+    for i = #items + 1, #self.listRows do
+      self.listRows[i]:Hide()
+    end
+
+    -- Message si tout est masque par les filtres
+    if self.emptyFS then
+      if #items == 0 then
+        self.emptyFS:SetText(COL_GREY .. "Aucun objet a afficher avec les filtres actuels." .. COL_RESET)
+        self.emptyFS:Show()
+      else
+        self.emptyFS:Hide()
+      end
+    end
+
+    -- Synchronise la case "Masquer obtenus" toujours visible
+    if self.hideObtainedCheck then
+      self.hideObtainedCheck:SetChecked((LegTrackerDB.filters or {}).hideObtained and true or false)
+    end
+
     self.listContent:SetHeight(math.max(300, y + 10))
-    if firstItem then RefreshDetail(firstItem) end
+
+    -- Restaure la selection precedente si l'item existe toujours dans cette
+    -- extension, sinon affiche le premier item. Evite que le panneau detail
+    -- ne "saute" vers le premier item a chaque rafraichissement (bag update...).
+    local toShow = firstItem
+    if self.selectedItem then
+      for _, it in ipairs(items) do
+        if it == self.selectedItem then toShow = it break end
+      end
+    end
+    self.selectedItem = toShow
+    if toShow then
+      RefreshDetail(toShow)
+      -- Surbrillance doree de la ligne selectionnee
+      for idx, it in ipairs(items) do
+        local row = self.listRows[idx]
+        if row and it == toShow then
+          row:SetBackdropBorderColor(0.72, 0.60, 0.28, 1.0)
+        end
+      end
+    end
   end
 
   mainFrame:Hide()
@@ -1482,6 +1865,23 @@ SlashCmdList["LEGTRACKER"] = function(msg)
 end
 
 -- ================================================================
+-- THROTTLE : coalesce les events rapides en un seul rescan
+-- Des events comme QUEST_LOG_UPDATE ou BAG_UPDATE_DELAYED peuvent se
+-- declencher en rafale ; on evite ainsi un ScanAll complet a chaque fire.
+-- ================================================================
+local refreshPending = false
+local function RequestRefresh(delay)
+  if refreshPending then return end
+  refreshPending = true
+  C_Timer.After(delay or 0.3, function()
+    refreshPending = false
+    if mainFrame and mainFrame:IsShown() then
+      mainFrame:RefreshContent()
+    end
+  end)
+end
+
+-- ================================================================
 -- EVENEMENTS
 -- ================================================================
 local evFrame = CreateFrame("Frame")
@@ -1510,9 +1910,15 @@ evFrame:SetScript("OnEvent", function(_, event, arg1)
       mainFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     end
 
-    -- La taille de fenetre est desormais fixe, on n'applique plus la taille sauvegardee
+    -- Taille sauvegardee (redimensionnement manuel)
+    if LegTrackerDB.width and LegTrackerDB.height then
+      mainFrame:SetSize(LegTrackerDB.width, LegTrackerDB.height)
+    end
 
-    LegTrackerDB.open = false  -- ferme automatiquement au login
+    -- Applique les options (echelle, opacite, minimap, verrou)
+    if mainFrame.ApplyOptions then mainFrame:ApplyOptions() end
+
+    LegTrackerDB.open = false  -- l'ouverture auto est geree au PLAYER_LOGIN
 
   elseif event == "ADDON_LOADED" and arg1 == "TibiSuite" then
     -- TibiSuite est présent : il gère le bouton minimap unifié
@@ -1524,23 +1930,35 @@ evFrame:SetScript("OnEvent", function(_, event, arg1)
     PLAYER_NAME  = UnitName("player")
     PLAYER_REALM = GetRealmName()
 
+    -- Si TibiSuite est deja charge (il peut se charger avant LegTracker),
+    -- il gere le bouton minimap unifie : on masque le notre.
+    if minimapBtn and C_AddOns and C_AddOns.IsAddOnLoaded
+       and C_AddOns.IsAddOnLoaded("TibiSuite") then
+      minimapBtn:Hide()
+    end
+
     ScanAll()
 
-    print(COL_BLUE .. "LegTracker v2.0" .. COL_RESET
+    -- Ouverture automatique au login si l'option est active
+    if LegTrackerDB.autoOpen and mainFrame then
+      mainFrame:Show() ; mainFrame:RefreshContent() ; LegTrackerDB.open = true
+    end
+
+    print(COL_BLUE .. "LegTracker v3.0" .. COL_RESET
           .. " charge -- tapez " .. COL_GOLD .. "/tlt" .. COL_RESET .. " pour ouvrir."
           .. " |cFF888888(/tlt scan = forcer scan, /tlt reset = reinit donnees compte)|r")
 
   elseif event == "BANKFRAME_OPENED" or event == "BANKFRAME_CLOSED" then
-    -- Rescanner apres ouverture banque (pour detecter items en banque)
-    C_Timer.After(0.5, function()
-      ScanAll()
-      if mainFrame and mainFrame:IsShown() then mainFrame:RefreshContent() end
-    end)
+    -- Rescanner apres ouverture/fermeture banque (pour detecter items en banque)
+    RequestRefresh(0.5)
+
+  elseif event == "ADDON_LOADED" then
+    -- ADDON_LOADED d'un autre addon : rien a faire (evite les rescans inutiles)
 
   else
-    if mainFrame and mainFrame:IsShown() then
-      mainFrame:RefreshContent()
-    end
+    -- BAG_UPDATE_DELAYED, QUEST_TURNED_IN, QUEST_LOG_UPDATE,
+    -- ACHIEVEMENT_EARNED, PLAYER_EQUIPMENT_CHANGED : rescan throttle
+    RequestRefresh()
   end
 
 end)
