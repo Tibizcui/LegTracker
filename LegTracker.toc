@@ -4,7 +4,7 @@
 ## Notes: Suivi des objets legendaires par extension, statut, quetes et composants. Suivi de compte complet.
 ## Notes-frFR: Suivi des objets legendaires par extension, statut, quetes et composants. Suivi de compte complet.
 ## Author: Tibiscui - Kirin Tor
-## Version: v3.0
+## Version: 4.0
 ## SavedVariables: LegTrackerDB
 ## IconTexture: Interface\AddOns\LegTracker\medias\LegTracker
 ## Category: Tracking
@@ -23,6 +23,8 @@
 # Affiche : 30x30 dans le bouton 32x32 (1 px de marge)
 # ----------------------------------------------------------------
 
+TibiMidnightUI.lua
 locales\frFR.lua
 data\LegendaryItems.lua
 LegTracker.lua
+LegTracker_Suite.lua

@@ -437,7 +437,18 @@ local function AddTomTomWaypoint(q)
     return
   end
   if not TomTom or not TomTom.AddWaypoint then
-    print(COL_BLUE .. "LegTracker" .. COL_RESET .. " TomTom n'est pas installe.")
+    -- Fallback natif Blizzard : point de route + grande fleche de suivi (equiv /way)
+    if C_Map and C_Map.SetUserWaypoint and UiMapPoint and UiMapPoint.CreateFromCoordinates then
+      C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(q.mapID, q.x / 100, q.y / 100))
+      if C_SuperTrack and C_SuperTrack.SetSuperTrackedUserWaypoint then
+        C_SuperTrack.SetSuperTrackedUserWaypoint(true)
+      end
+      print(COL_BLUE .. "LegTracker" .. COL_RESET
+            .. " Waypoint (carte) : " .. (q.name or "?") .. " (" .. (q.zone or "?") .. ")")
+    else
+      print(COL_BLUE .. "LegTracker" .. COL_RESET
+            .. " Impossible de poser un waypoint natif. Installez |cFFFFD700TomTom|r.")
+    end
     return
   end
   TomTom:AddWaypoint(q.mapID, q.x / 100, q.y / 100, {
@@ -1153,6 +1164,16 @@ local function BuildUI()
   byLine:SetFont("Fonts\\FRIZQT__.TTF", 9, "OUTLINE")
   byLine:SetPoint("TOP", titleStr, "BOTTOM", 0, 0)
   byLine:SetText(COL_PINK .. "by Tibiscui" .. COL_RESET)
+
+  -- TibiSuite : en-tête comme WeeklyCompass (titre à l'intérieur, haut-gauche)
+  logoLeft:Hide(); logoRight:Hide()
+  byLine:Hide()
+  titleBg:Hide()
+  titleStr:SetParent(mainFrame)
+  titleStr:SetFontObject("GameFontNormalLarge")
+  titleStr:ClearAllPoints()
+  titleStr:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 16, -14)
+  titleStr:SetText("|cFFFF6D0BLegTracker|r")
 
   local closeBtn = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
   closeBtn:SetPoint("TOPRIGHT", -5, -5)
